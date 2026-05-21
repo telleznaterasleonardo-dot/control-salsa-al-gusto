@@ -25,7 +25,12 @@ url_base = 'https://entricontrol-api.entricontrol.com/public/api/members?sortFie
 def obtener_ultimos_10_digitos(texto):
     if not texto:
         return ""
-    digitos = re.sub(r'\D', '', str(texto))
+    # BLINDAJE 1: Limpiamos espacios y eliminamos un ".0" si Excel lo agregó por error
+    texto_str = str(texto).strip()
+    if texto_str.endswith('.0'):
+        texto_str = texto_str[:-2]
+        
+    digitos = re.sub(r'\D', '', texto_str)
     return digitos[-10:] if len(digitos) >= 10 else digitos
 
 def procesar_txt_whatsapp(contenido_archivo):
@@ -40,11 +45,13 @@ def procesar_txt_whatsapp(contenido_archivo):
 
 # --- LÓGICA PRINCIPAL ---
 if archivo_subido is not None and token_entri:
+    # BLINDAJE 2: Obligamos a Pandas a leer los Excel/CSV como texto puro (dtype=str)
     if archivo_subido.name.endswith('.txt'):
-        contenido = archivo_subido.read().decode("utf-8")
+        contenido = archivo_subido.read().decode("utf-8", errors="ignore")
     else:
-        df_temp = pd.read_excel(archivo_subido) if archivo_subido.name.endswith('.xlsx') else pd.read_csv(archivo_subido)
-        contenido = df_temp.to_string()
+        df_temp = pd.read_excel(archivo_subido, dtype=str) if archivo_subido.name.endswith('.xlsx') else pd.read_csv(archivo_subido, dtype=str)
+        # Convertimos todo a formato de valores separados para no usar to_string() que formatea los números
+        contenido = df_temp.to_csv(index=False)
         
     activos_whatsapp = procesar_txt_whatsapp(contenido)
     st.success(f"✅ ¡WhatsApp leído con éxito! Se detectaron {len(activos_whatsapp)} números activos.")
