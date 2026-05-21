@@ -18,6 +18,9 @@ with st.sidebar:
     token_entri = st.text_input("🔑 Pega tu Token de Entri (Bearer):", type="password", help="Pega aquí el texto larguísimo que sacas de Entri (F12).")
     st.markdown("---")
     archivo_subido = st.file_uploader("📂 Sube 'activos_whatsapp.txt' o el Excel", type=['txt', 'csv', 'xlsx'])
+    st.markdown("---")
+    st.subheader("🧒 Filtros Especiales")
+    filtro_kids = st.checkbox("Generar reporte EXCLUSIVO de KIDS", help="Filtra a los alumnos que tengan los paquetes 'BAILE KIDS' o 'CLASE KIDS'")
 
 # 1. Configuración de conexión a Entri
 url_base = 'https://entricontrol-api.entricontrol.com/public/api/members?sortField=internal_id&sortDirection=DESC&filter='
@@ -25,7 +28,6 @@ url_base = 'https://entricontrol-api.entricontrol.com/public/api/members?sortFie
 def obtener_ultimos_10_digitos(texto):
     if not texto:
         return ""
-    # BLINDAJE 1: Limpiamos espacios y eliminamos un ".0" si Excel lo agregó por error
     texto_str = str(texto).strip()
     if texto_str.endswith('.0'):
         texto_str = texto_str[:-2]
@@ -45,13 +47,13 @@ def procesar_txt_whatsapp(contenido_archivo):
 
 # --- LÓGICA PRINCIPAL ---
 if archivo_subido is not None and token_entri:
-    # BLINDAJE 2: Obligamos a Pandas a leer los Excel/CSV como texto puro (dtype=str)
-    if archivo_subido.name.endswith('.txt'):
-        contenido = archivo_subido.read().decode("utf-8", errors="ignore")
-    else:
-        df_temp = pd.read_excel(archivo_subido, dtype=str) if archivo_subido.name.endswith('.xlsx') else pd.read_csv(archivo_subido, dtype=str)
-        # Convertimos todo a formato de valores separados para no usar to_string() que formatea los números
+    
+    archivo_subido.seek(0)
+    if archivo_subido.name.endswith('.xlsx'):
+        df_temp = pd.read_excel(archivo_subido, dtype=str)
         contenido = df_temp.to_csv(index=False)
+    else:
+        contenido = archivo_subido.read().decode("utf-8", errors="ignore")
         
     activos_whatsapp = procesar_txt_whatsapp(contenido)
     st.success(f"✅ ¡WhatsApp leído con éxito! Se detectaron {len(activos_whatsapp)} números activos.")
@@ -112,6 +114,15 @@ if archivo_subido is not None and token_entri:
             mes_actual_nombre = meses_es[datetime.now().month - 1]
             
             for alumno in todos_los_alumnos:
+                # --- AQUÍ ESTÁ LA MAGIA DEL FILTRO KIDS ---
+                # Convertimos todo el perfil del alumno a texto y buscamos "KIDS"
+                es_kid = "KIDS" in str(alumno).upper()
+                
+                # Si activaste la casilla de Kids en la web y el alumno NO es kid, lo ignoramos y pasamos al siguiente
+                if filtro_kids and not es_kid:
+                    continue
+                # ------------------------------------------
+
                 telefono = str(alumno.get('phone', alumno.get('cellphone', '0'))).strip()
                 nombre_pila = str(alumno.get('name', alumno.get('nombre', ''))).strip()
                 apellido = str(alumno.get('last_name', alumno.get('apellido', alumno.get('apellidos', '')))).strip()
@@ -159,6 +170,7 @@ if archivo_subido is not None and token_entri:
             df_final = pd.DataFrame(filas_procesadas, columns=columnas_finales)
             
             # --- DESPLIEGUE DE MÉTRICAS ---
+            st.markdown(f"### {'👧👦 Reporte Exclusivo de KIDS' if filtro_kids else '📊 Reporte General de Alumnos'}")
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Total Alumnos (Entri)", len(df_final))
             col2.metric("Alumnos Activos 🕺", len(df_final[df_final['Estatus'] == 'Activo']))
@@ -172,10 +184,12 @@ if archivo_subido is not None and token_entri:
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df_final.to_excel(writer, index=False, sheet_name='Control SAG')
             
+            nombre_archivo = f"Control_SAG_KIDS_{fecha_hoy}.xlsx" if filtro_kids else f"Control_SAG_{fecha_hoy}.xlsx"
+            
             st.download_button(
-                label="📥 Descargar Base de Datos Completa en Excel",
+                label="📥 Descargar Base de Datos en Excel",
                 data=buffer.getvalue(),
-                file_name=f"Control_SAG_{fecha_hoy}.xlsx",
+                file_name=nombre_archivo,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 else:
