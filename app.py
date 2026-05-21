@@ -20,10 +20,11 @@ with st.sidebar:
     archivo_subido = st.file_uploader("📂 Sube 'activos_whatsapp.txt' o el Excel", type=['txt', 'csv', 'xlsx'])
     st.markdown("---")
     st.subheader("🧒 Filtros Especiales")
-    filtro_kids = st.checkbox("Generar reporte EXCLUSIVO de KIDS", help="Filtra a los alumnos que tengan los paquetes 'BAILE KIDS' o 'CLASE KIDS'")
+    filtro_kids = st.checkbox("Generar histórico EXCLUSIVO de KIDS", help="Busca en el historial de pagos a todos los niños desde que inició la academia.")
 
-# 1. Configuración de conexión a Entri
-url_base = 'https://entricontrol-api.entricontrol.com/public/api/members?sortField=internal_id&sortDirection=DESC&filter='
+# 1. Configuración de conexión a Entri (¡AQUÍ ESTÁ LA NUEVA RUTA DE PAGOS!)
+url_base_members = 'https://entricontrol-api.entricontrol.com/public/api/members?sortField=internal_id&sortDirection=DESC&filter='
+url_base_payments = 'https://entricontrol-api.entricontrol.com/public/api/payments?sortField=payments.created_at&sortDirection=DESC&pagination=true'
 
 def obtener_ultimos_10_digitos(texto):
     if not texto:
@@ -66,18 +67,23 @@ if archivo_subido is not None and token_entri:
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36'
         }
         
-        todos_los_alumnos = []
+        todos_los_registros = []
         pagina_actual = 1
         ultima_pagina = 1 
         
         progress_bar = st.progress(0)
         status_text = st.empty()
-        status_text.text("Conectando con la API de Entri...")
+        
+        # Le decimos al sistema qué ruta usar dependiendo si el filtro está activo o no
+        tipo_api = "Pagos (Histórico)" if filtro_kids else "Alumnos"
+        url_activa = url_base_payments if filtro_kids else url_base_members
+        
+        status_text.text(f"Conectando con la base de datos de {tipo_api}...")
         
         error_conexion = False
         
         while pagina_actual <= ultima_pagina:
-            url_paginada = f"{url_base}&page={pagina_actual}"
+            url_paginada = f"{url_activa}&page={pagina_actual}"
             respuesta = requests.get(url_paginada, headers=headers)
             
             if respuesta.status_code in [200, 201]:
@@ -87,20 +93,20 @@ if archivo_subido is not None and token_entri:
                 if isinstance(nodo_principal, dict):
                     if pagina_actual == 1:
                         ultima_pagina = nodo_principal.get('last_page', 1)
-                    alumnos_de_esta_pagina = nodo_principal.get('data', [])
+                    registros_pagina = nodo_principal.get('data', [])
                 elif isinstance(nodo_principal, list):
-                    alumnos_de_esta_pagina = nodo_principal
+                    registros_pagina = nodo_principal
                     ultima_pagina = 1
                 else:
-                    alumnos_de_esta_pagina = []
+                    registros_pagina = []
                     
-                todos_los_alumnos.extend(alumnos_de_esta_pagina)
-                status_text.text(f"Descargando alumnos... Página {pagina_actual} de {ultima_pagina}")
+                todos_los_registros.extend(registros_pagina)
+                status_text.text(f"Descargando {tipo_api}... Página {pagina_actual} de {ultima_pagina}")
                 progress_bar.progress(min(pagina_actual / ultima_pagina, 1.0))
                 pagina_actual += 1
                 time.sleep(0.1)
             else:
-                st.error(f"❌ Error de conexión (Código: {respuesta.status_code}). Verifica que tu Token sea nuevo y esté correcto.")
+                st.error(f"❌ Error de conexión (Código: {respuesta.status_code}). Verifica que tu Token sea nuevo.")
                 error_conexion = True
                 break
                 
@@ -113,33 +119,48 @@ if archivo_subido is not None and token_entri:
             meses_es = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
             mes_actual_nombre = meses_es[datetime.now().month - 1]
             
-            for alumno in todos_los_alumnos:
-                # --- AQUÍ ESTÁ LA MAGIA DEL FILTRO KIDS ---
-                # Convertimos todo el perfil del alumno a texto y buscamos "KIDS"
-                es_kid = "KIDS" in str(alumno).upper()
+            # Filtro Anti-Duplicados para que no se repitan los niños que han pagado muchas veces
+            alumnos_unicos_procesados = {}
+            
+            for registro in todos_los_registros:
+                # Buscamos a fuerza la palabra KIDS en todo el código del recibo de pago o en el perfil
+                es_kid = "KIDS" in str(registro).upper()
                 
-                # Si activaste la casilla de Kids en la web y el alumno NO es kid, lo ignoramos y pasamos al siguiente
-                if filtro_kids and not es_kid:
+                if filtro_kids:
+                    if not es_kid:
+                        continue
+                    # Si es el API de pagos, la info del alumno suele venir guardada dentro de 'member'
+                    alumno = registro.get('member', registro)
+                else:
+                    alumno = registro
+                
+                clave_entri = str(alumno.get('internal_id', alumno.get('id', registro.get('member_id', ''))))
+                
+                # Si activamos Kids y este ID de niño ya lo habíamos guardado antes, lo ignoramos
+                if filtro_kids and clave_entri in alumnos_unicos_procesados:
                     continue
-                # ------------------------------------------
+                
+                # Lo marcamos como "procesado" para no repetirlo
+                alumnos_unicos_procesados[clave_entri] = True
 
-                telefono = str(alumno.get('phone', alumno.get('cellphone', '0'))).strip()
-                nombre_pila = str(alumno.get('name', alumno.get('nombre', ''))).strip()
+                telefono = str(alumno.get('phone', alumno.get('cellphone', registro.get('member_phone', '0')))).strip()
+                nombre_pila = str(alumno.get('name', alumno.get('nombre', registro.get('member_name', '')))).strip()
                 apellido = str(alumno.get('last_name', alumno.get('apellido', alumno.get('apellidos', '')))).strip()
                 nombre_completo = f"{nombre_pila} {apellido}".strip()
                 
                 fecha_nac = alumno.get('manual_id', '') 
-                clave_entri = alumno.get('internal_id', alumno.get('id', ''))
                 
                 cumple_este_mes = "¡Felicidades!" if (fecha_nac and mes_actual_nombre in str(fecha_nac).lower()) else ""
                 
-                fecha_original = alumno.get('last_payment_date', alumno.get('payment_date', alumno.get('updated_at', '')))
+                # Buscamos la fecha en cualquier parte posible (perfil o recibo de pago)
+                fecha_original = alumno.get('last_payment_date', alumno.get('payment_date', alumno.get('updated_at', registro.get('created_at', ''))))
                 ultima_visita = ""
                 dias_sin_venir = ""
                 estatus = "Sin datos"
                 
                 if fecha_original:
-                    ultima_visita = str(fecha_original).split('T')[0] if 'T' in str(fecha_original) else str(fecha_original).strip()
+                    # Limpiamos la fecha por si viene con horas (ej: 2026-05-21 15:30:00)
+                    ultima_visita = str(fecha_original).split('T')[0].split(' ')[0] if 'T' in str(fecha_original) or ' ' in str(fecha_original) else str(fecha_original).strip()
                     try:
                         fecha_visita_dt = datetime.strptime(ultima_visita, "%Y-%m-%d").date()
                         dias_sin_venir = (fecha_hoy - fecha_visita_dt).days
@@ -170,7 +191,7 @@ if archivo_subido is not None and token_entri:
             df_final = pd.DataFrame(filas_procesadas, columns=columnas_finales)
             
             # --- DESPLIEGUE DE MÉTRICAS ---
-            st.markdown(f"### {'👧👦 Reporte Exclusivo de KIDS' if filtro_kids else '📊 Reporte General de Alumnos'}")
+            st.markdown(f"### {'👧👦 Histórico de Alumnos KIDS (Desde el inicio)' if filtro_kids else '📊 Reporte General de Alumnos'}")
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Total Alumnos (Entri)", len(df_final))
             col2.metric("Alumnos Activos 🕺", len(df_final[df_final['Estatus'] == 'Activo']))
