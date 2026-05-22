@@ -19,10 +19,10 @@ with st.sidebar:
     st.markdown("---")
     archivo_subido = st.file_uploader("📂 Sube 'activos_whatsapp.txt' o el Excel", type=['txt', 'csv', 'xlsx'])
     st.markdown("---")
-    st.subheader("🧒 Filtros Especiales")
-    filtro_kids = st.checkbox("Generar histórico EXCLUSIVO de KIDS", help="Busca en el historial de pagos a todos los niños desde que inició la academia.")
+    st.subheader("🕵️ Filtros Avanzados")
+    escaneo_profundo = st.checkbox("🔍 Identificar quiénes son KIDS (Escaneo Profundo)", help="Cruza el historial de pagos con la lista de alumnos para agregar la columna '¿Es Kid?'. Tarda un poco más.")
 
-# 1. Configuración de conexión a Entri (¡AQUÍ ESTÁ LA NUEVA RUTA DE PAGOS!)
+# 1. Configuración de conexión a Entri
 url_base_members = 'https://entricontrol-api.entricontrol.com/public/api/members?sortField=internal_id&sortDirection=DESC&filter='
 url_base_payments = 'https://entricontrol-api.entricontrol.com/public/api/payments?sortField=payments.created_at&sortDirection=DESC&pagination=true'
 
@@ -67,100 +67,127 @@ if archivo_subido is not None and token_entri:
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36'
         }
         
-        todos_los_registros = []
-        pagina_actual = 1
-        ultima_pagina = 1 
+        error_conexion = False
+        ids_de_ninos = set()
         
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
-        # Le decimos al sistema qué ruta usar dependiendo si el filtro está activo o no
-        tipo_api = "Pagos (Histórico)" if filtro_kids else "Alumnos"
-        url_activa = url_base_payments if filtro_kids else url_base_members
-        
-        status_text.text(f"Conectando con la base de datos de {tipo_api}...")
-        
-        error_conexion = False
-        
-        while pagina_actual <= ultima_pagina:
-            url_paginada = f"{url_activa}&page={pagina_actual}"
-            respuesta = requests.get(url_paginada, headers=headers)
+
+        # ==========================================
+        # FASE 1: Buscar IDs de niños
+        # ==========================================
+        if escaneo_profundo:
+            pagina_pagos = 1
+            ultima_pagos = 1
+            status_text.text("Fase 1/2: Analizando historial de pagos para ubicar a los Kids...")
             
-            if respuesta.status_code in [200, 201]:
-                datos_json = respuesta.json()
-                nodo_principal = datos_json.get('data', datos_json)
+            while pagina_pagos <= ultima_pagos:
+                url_pagos_paginada = f"{url_base_payments}&page={pagina_pagos}"
+                resp_pagos = requests.get(url_pagos_paginada, headers=headers)
                 
-                if isinstance(nodo_principal, dict):
-                    if pagina_actual == 1:
-                        ultima_pagina = nodo_principal.get('last_page', 1)
-                    registros_pagina = nodo_principal.get('data', [])
-                elif isinstance(nodo_principal, list):
-                    registros_pagina = nodo_principal
-                    ultima_pagina = 1
-                else:
-                    registros_pagina = []
+                if resp_pagos.status_code in [200, 201]:
+                    datos_pagos = resp_pagos.json().get('data', resp_pagos.json())
+                    if isinstance(datos_pagos, dict):
+                        if pagina_pagos == 1:
+                            ultima_pagos = datos_pagos.get('last_page', 1)
+                        registros_pagos = datos_pagos.get('data', [])
+                    elif isinstance(datos_pagos, list):
+                        registros_pagos = datos_pagos
+                        ultima_pagos = 1
+                    else:
+                        registros_pagos = []
                     
-                todos_los_registros.extend(registros_pagina)
-                status_text.text(f"Descargando {tipo_api}... Página {pagina_actual} de {ultima_pagina}")
-                progress_bar.progress(min(pagina_actual / ultima_pagina, 1.0))
-                pagina_actual += 1
-                time.sleep(0.1)
-            else:
-                st.error(f"❌ Error de conexión (Código: {respuesta.status_code}). Verifica que tu Token sea nuevo.")
-                error_conexion = True
-                break
+                    for pago in registros_pagos:
+                        if "KIDS" in str(pago).upper():
+                            alumno_info = pago.get('member', pago)
+                            id_kid = str(alumno_info.get('internal_id', alumno_info.get('id', pago.get('member_id', ''))))
+                            ids_de_ninos.add(id_kid)
+                            
+                    progress_bar.progress(min(pagina_pagos / ultima_pagos, 1.0))
+                    pagina_pagos += 1
+                    time.sleep(0.05)
+                else:
+                    st.error(f"❌ Error en la conexión de pagos (Código: {resp_pagos.status_code}).")
+                    error_conexion = True
+                    break
+
+        # ==========================================
+        # FASE 2: Descargar Lista General de Alumnos
+        # ==========================================
+        if not error_conexion:
+            todos_los_alumnos = []
+            pagina_actual = 1
+            ultima_pagina = 1 
+            
+            progress_bar.progress(0)
+            status_text.text("Fase 2/2: Descargando lista general de alumnos...")
+            
+            while pagina_actual <= ultima_pagina:
+                url_paginada = f"{url_base_members}&page={pagina_actual}"
+                respuesta = requests.get(url_paginada, headers=headers)
                 
+                if respuesta.status_code in [200, 201]:
+                    datos_json = respuesta.json()
+                    nodo_principal = datos_json.get('data', datos_json)
+                    
+                    if isinstance(nodo_principal, dict):
+                        if pagina_actual == 1:
+                            ultima_pagina = nodo_principal.get('last_page', 1)
+                        alumnos_de_esta_pagina = nodo_principal.get('data', [])
+                    elif isinstance(nodo_principal, list):
+                        alumnos_de_esta_pagina = nodo_principal
+                        ultima_pagina = 1
+                    else:
+                        alumnos_de_esta_pagina = []
+                        
+                    todos_los_alumnos.extend(alumnos_de_esta_pagina)
+                    status_text.text(f"Descargando alumnos... Página {pagina_actual} de {ultima_pagina}")
+                    progress_bar.progress(min(pagina_actual / ultima_pagina, 1.0))
+                    pagina_actual += 1
+                    time.sleep(0.05)
+                else:
+                    st.error(f"❌ Error de conexión (Código: {respuesta.status_code}). Verifica que tu Token sea nuevo.")
+                    error_conexion = True
+                    break
+
         progress_bar.empty()
         status_text.empty()
         
+        # ==========================================
+        # FASE 3: Cruzar la Información y Armar Tabla
+        # ==========================================
         if not error_conexion:
             filas_procesadas = []
             fecha_hoy = datetime.now().date()
             meses_es = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
             mes_actual_nombre = meses_es[datetime.now().month - 1]
             
-            # Filtro Anti-Duplicados para que no se repitan los niños que han pagado muchas veces
-            alumnos_unicos_procesados = {}
-            
-            for registro in todos_los_registros:
-                # Buscamos a fuerza la palabra KIDS en todo el código del recibo de pago o en el perfil
-                es_kid = "KIDS" in str(registro).upper()
+            for alumno in todos_los_alumnos:
+                clave_entri = str(alumno.get('internal_id', alumno.get('id', '')))
                 
-                if filtro_kids:
-                    if not es_kid:
-                        continue
-                    # Si es el API de pagos, la info del alumno suele venir guardada dentro de 'member'
-                    alumno = registro.get('member', registro)
+                if escaneo_profundo:
+                    es_kid_texto = "SI" if clave_entri in ids_de_ninos else "NO"
                 else:
-                    alumno = registro
-                
-                clave_entri = str(alumno.get('internal_id', alumno.get('id', registro.get('member_id', ''))))
-                
-                # Si activamos Kids y este ID de niño ya lo habíamos guardado antes, lo ignoramos
-                if filtro_kids and clave_entri in alumnos_unicos_procesados:
-                    continue
-                
-                # Lo marcamos como "procesado" para no repetirlo
-                alumnos_unicos_procesados[clave_entri] = True
+                    es_kid_texto = "No analizado"
 
-                telefono = str(alumno.get('phone', alumno.get('cellphone', registro.get('member_phone', '0')))).strip()
-                nombre_pila = str(alumno.get('name', alumno.get('nombre', registro.get('member_name', '')))).strip()
+                telefono_bruto = str(alumno.get('phone', alumno.get('cellphone', '0'))).strip()
+                # Extraemos y limpiamos el teléfono para que el análisis de duplicados sea perfecto
+                telefono_limpio = obtener_ultimos_10_digitos(telefono_bruto)
+                
+                nombre_pila = str(alumno.get('name', alumno.get('nombre', ''))).strip()
                 apellido = str(alumno.get('last_name', alumno.get('apellido', alumno.get('apellidos', '')))).strip()
                 nombre_completo = f"{nombre_pila} {apellido}".strip()
                 
                 fecha_nac = alumno.get('manual_id', '') 
-                
                 cumple_este_mes = "¡Felicidades!" if (fecha_nac and mes_actual_nombre in str(fecha_nac).lower()) else ""
                 
-                # Buscamos la fecha en cualquier parte posible (perfil o recibo de pago)
-                fecha_original = alumno.get('last_payment_date', alumno.get('payment_date', alumno.get('updated_at', registro.get('created_at', ''))))
+                fecha_original = alumno.get('last_payment_date', alumno.get('payment_date', alumno.get('updated_at', '')))
                 ultima_visita = ""
                 dias_sin_venir = ""
                 estatus = "Sin datos"
                 
                 if fecha_original:
-                    # Limpiamos la fecha por si viene con horas (ej: 2026-05-21 15:30:00)
-                    ultima_visita = str(fecha_original).split('T')[0].split(' ')[0] if 'T' in str(fecha_original) or ' ' in str(fecha_original) else str(fecha_original).strip()
+                    ultima_visita = str(fecha_original).split('T')[0] if 'T' in str(fecha_original) else str(fecha_original).strip()
                     try:
                         fecha_visita_dt = datetime.strptime(ultima_visita, "%Y-%m-%d").date()
                         dias_sin_venir = (fecha_hoy - fecha_visita_dt).days
@@ -170,11 +197,12 @@ if archivo_subido is not None and token_entri:
                     except:
                         pass
                 
-                salio = 'SI' if (obtener_ultimos_10_digitos(telefono) not in activos_whatsapp and len(obtener_ultimos_10_digitos(telefono)) == 10) else ''
+                salio = 'SI' if (telefono_limpio not in activos_whatsapp and len(telefono_limpio) == 10) else ''
                 
                 filas_procesadas.append({
-                    'Num de telefono': telefono,
+                    'Num de telefono': telefono_limpio, 
                     'Nombre': nombre_completo,
+                    '¿Es Kid?': es_kid_texto,
                     'Fecha de nacimiento': fecha_nac,
                     '¿Cumpleaños este mes?': cumple_este_mes,
                     'Registro en entri': clave_entri,
@@ -184,28 +212,55 @@ if archivo_subido is not None and token_entri:
                     'SALIO DE GRUPO': salio
                 })
                 
-            columnas_finales = [
-                'Num de telefono', 'Nombre', 'Fecha de nacimiento', '¿Cumpleaños este mes?',
+            columnas_base = [
+                'Num de telefono', 'Nombre', '¿Es Kid?', 'Fecha de nacimiento', '¿Cumpleaños este mes?',
                 'Registro en entri', 'Ultima Visita', 'Dias sin venir', 'Estatus', 'SALIO DE GRUPO'
             ]
-            df_final = pd.DataFrame(filas_procesadas, columns=columnas_finales)
+            df_final = pd.DataFrame(filas_procesadas, columns=columnas_base)
+            
+            # --- LA NUEVA MAGIA: DETECCIÓN DE DUPLICADOS ---
+            # Le pedimos a Pandas que busque números exactos de 10 dígitos que aparezcan más de una vez
+            mask_validos = df_final['Num de telefono'].str.len() == 10
+            mask_duplicados = df_final.duplicated(subset=['Num de telefono'], keep=False)
+            
+            df_final['¿Num Duplicado?'] = ''
+            df_final.loc[mask_validos & mask_duplicados, '¿Num Duplicado?'] = 'SI'
+            
+            # Reorganizamos las columnas para que la alerta salga junto al número y nombre
+            columnas_ordenadas = [
+                'Num de telefono', '¿Num Duplicado?', 'Nombre', '¿Es Kid?', 'Fecha de nacimiento', 
+                '¿Cumpleaños este mes?', 'Registro en entri', 'Ultima Visita', 'Dias sin venir', 
+                'Estatus', 'SALIO DE GRUPO'
+            ]
+            df_final = df_final[columnas_ordenadas]
+            # -----------------------------------------------
             
             # --- DESPLIEGUE DE MÉTRICAS ---
-            st.markdown(f"### {'👧👦 Histórico de Alumnos KIDS (Desde el inicio)' if filtro_kids else '📊 Reporte General de Alumnos'}")
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Total Alumnos (Entri)", len(df_final))
-            col2.metric("Alumnos Activos 🕺", len(df_final[df_final['Estatus'] == 'Activo']))
+            st.markdown("### 📊 Reporte General de Alumnos")
+            
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("Total Alumnos", len(df_final))
+            
+            if escaneo_profundo:
+                total_kids = len(df_final[df_final['¿Es Kid?'] == 'SI'])
+                col2.metric("Alumnos KIDS 👧👦", total_kids)
+            else:
+                col2.metric("Activos 🕺", len(df_final[df_final['Estatus'] == 'Activo']))
+                
             col3.metric("En Riesgo ⚠️", len(df_final[df_final['Estatus'] == 'En Riesgo']))
             col4.metric("Fuera del Grupo", len(df_final[df_final['SALIO DE GRUPO'] == 'SI']))
             
+            total_duplicados = len(df_final[df_final['¿Num Duplicado?'] == 'SI'])
+            col5.metric("Num Repetidos 👯", total_duplicados)
+            
             st.markdown("### 📋 Vista Previa de la Base de Datos")
-            st.dataframe(df_final, use_container_width=True)
+            st.dataframe(df_final, use_container_width=True, hide_index=True)
             
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df_final.to_excel(writer, index=False, sheet_name='Control SAG')
             
-            nombre_archivo = f"Control_SAG_KIDS_{fecha_hoy}.xlsx" if filtro_kids else f"Control_SAG_{fecha_hoy}.xlsx"
+            nombre_archivo = f"Control_SAG_{fecha_hoy}.xlsx"
             
             st.download_button(
                 label="📥 Descargar Base de Datos en Excel",
