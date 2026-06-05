@@ -215,15 +215,24 @@ if archivo_subido is not None and token_entri:
                 estatus = "Sin datos"
                 
                 if fecha_original:
-                    ultima_visita = str(fecha_original).split('T')[0] if 'T' in str(fecha_original) else str(fecha_original).strip()
+                    # --- EL FILTRO LIMPIADOR ---
+                    # Reemplazamos la 'T' por un espacio (por si acaso) y cortamos el texto en el primer espacio.
+                    # Así "2026-06-04 21:38:25" o "2026-06-04T21:38" siempre se convertirá en "2026-06-04"
+                    ultima_visita = str(fecha_original).replace('T', ' ').split(' ')[0].strip()
+                    
                     try:
                         fecha_visita_dt = datetime.strptime(ultima_visita, "%Y-%m-%d").date()
                         dias_sin_venir = (fecha_hoy - fecha_visita_dt).days
-                        if dias_sin_venir <= 7: estatus = "Activo"
-                        elif dias_sin_venir <= 30: estatus = "En Riesgo"
-                        else: estatus = "Inactivo"
+                        
+                        if dias_sin_venir <= 15: 
+                            estatus = "Activo"
+                        elif dias_sin_venir <= 30: 
+                            estatus = "En Riesgo"
+                        else: 
+                            estatus = "Inactivo"
                     except:
-                        pass
+                        # Si llega a fallar, nos mostrará el error en lugar de quedarse mudo
+                        estatus = "Error de formato"
                 
                 salio = 'SI' if (telefono_limpio not in activos_whatsapp and len(telefono_limpio) == 10) else ''
                 
