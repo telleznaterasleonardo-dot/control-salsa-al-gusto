@@ -22,9 +22,8 @@ with st.sidebar:
     st.subheader("🕵️ Filtros Avanzados (Histórico)")
     st.markdown("Cruza el historial de pagos con la lista de alumnos. (Tarda un poco más)")
     buscar_kids = st.checkbox("👧👦 Identificar KIDS")
-    buscar_pole = st.checkbox("💃 Identificar POLE DANCE")
+    buscar_pole = st.checkbox("💃 Identificar POLE DANCE y Extraer Pagos")
     
-# Variable para saber si debemos hacer el escaneo lento
 escaneo_profundo = buscar_kids or buscar_pole
 
 # 1. Configuración de conexión a Entri
@@ -76,16 +75,19 @@ if archivo_subido is not None and token_entri:
         ids_de_ninos = set()
         ids_de_pole = set()
         
+        # --- NUEVA LISTA PARA GUARDAR LOS RECIBOS DE POLE ---
+        lista_pagos_pole = []
+        
         progress_bar = st.progress(0)
         status_text = st.empty()
 
         # ==========================================
-        # FASE 1: Buscar IDs Históricos (Pagos)
+        # FASE 1: Buscar IDs Históricos y Atrapar Pagos
         # ==========================================
         if escaneo_profundo:
             pagina_pagos = 1
             ultima_pagos = 1
-            status_text.text("Fase 1/2: Analizando historial de pagos para ubicar clases especiales...")
+            status_text.text("Fase 1/2: Analizando historial de pagos y recolectando recibos...")
             
             while pagina_pagos <= ultima_pagos:
                 url_pagos_paginada = f"{url_base_payments}&page={pagina_pagos}"
@@ -111,9 +113,24 @@ if archivo_subido is not None and token_entri:
                         if buscar_kids and "KIDS" in pago_str:
                             ids_de_ninos.add(id_alumno)
                             
-                        # El nuevo filtro caza cualquier paquete que contenga la palabra "POLE"
                         if buscar_pole and "POLE" in pago_str:
                             ids_de_pole.add(id_alumno)
+                            
+                            # --- EXTRACCIÓN DEL RECIBO FINANCIERO ---
+                            monto = pago.get('amount', pago.get('total', '0'))
+                            fecha_recibo_cruda = pago.get('created_at', pago.get('payment_date', ''))
+                            fecha_recibo_limpia = str(fecha_recibo_cruda).replace('T', ' ').split(' ')[0] if fecha_recibo_cruda else 'Desconocida'
+                            
+                            nombre_pila = str(alumno_info.get('name', alumno_info.get('nombre', ''))).strip()
+                            apellido = str(alumno_info.get('last_name', alumno_info.get('apellido', ''))).strip()
+                            
+                            lista_pagos_pole.append({
+                                'ID Recibo': pago.get('id', ''),
+                                'Fecha de Pago': fecha_recibo_limpia,
+                                'Alumno': f"{nombre_pila} {apellido}".strip(),
+                                'Monto Registrado': f"${monto}"
+                            })
+                            # ----------------------------------------
                             
                     progress_bar.progress(min(pagina_pagos / ultima_pagos, 1.0))
                     pagina_pagos += 1
@@ -158,7 +175,7 @@ if archivo_subido is not None and token_entri:
                     pagina_actual += 1
                     time.sleep(0.05)
                 else:
-                    st.error(f"❌ Error de conexión (Código: {respuesta.status_code}). Verifica que tu Token sea nuevo.")
+                    st.error(f"❌ Error de conexión (Código: {respuesta.status_code}).")
                     error_conexion = True
                     break
 
@@ -177,7 +194,6 @@ if archivo_subido is not None and token_entri:
             for alumno in todos_los_alumnos:
                 clave_entri = str(alumno.get('internal_id', alumno.get('id', '')))
                 
-                # Evaluamos los filtros que encendiste
                 if buscar_kids:
                     es_kid_texto = "SI" if clave_entri in ids_de_ninos else "NO"
                 else:
@@ -190,49 +206,40 @@ if archivo_subido is not None and token_entri:
 
                 telefono_bruto = str(alumno.get('phone', alumno.get('cellphone', '0'))).strip()
                 telefono_limpio = obtener_ultimos_10_digitos(telefono_bruto)
-                
                 nombre_pila = str(alumno.get('name', alumno.get('nombre', ''))).strip()
                 apellido = str(alumno.get('last_name', alumno.get('apellido', alumno.get('apellidos', '')))).strip()
                 nombre_completo = f"{nombre_pila} {apellido}".strip()
-                
                 fecha_nac = alumno.get('manual_id', '') 
                 cumple_este_mes = "¡Felicidades!" if (fecha_nac and mes_actual_nombre in str(fecha_nac).lower()) else ""
                 
-                # --- NUEVA LÓGICA EXACTA PARA LA FECHA DE VISITA ---
+                # --- LÓGICA DE ÚLTIMA VISITA CORREGIDA (LIMPIA LA HORA) ---
                 fecha_original = ""
                 pago_actual = alumno.get('current_payment')
                 
-                # 1. Intentamos abrir la "caja secreta" del pago actual
                 if pago_actual and isinstance(pago_actual, dict):
                     fecha_original = pago_actual.get('checkin_date') or pago_actual.get('created_at') or ''
                     
-                # 2. Si no hay pago actual, buscamos fechas de rescate (y evitamos el updated_at)
                 if not fecha_original:
                     fecha_original = alumno.get('last_payment_date') or alumno.get('payment_date') or alumno.get('created_at', '')
-                # ---------------------------------------------------
+
                 ultima_visita = ""
                 dias_sin_venir = ""
                 estatus = "Sin datos"
                 
                 if fecha_original:
-                    # --- EL FILTRO LIMPIADOR ---
-                    # Reemplazamos la 'T' por un espacio (por si acaso) y cortamos el texto en el primer espacio.
-                    # Así "2026-06-04 21:38:25" o "2026-06-04T21:38" siempre se convertirá en "2026-06-04"
+                    # Aquí cortamos la hora para evitar que el programa se rompa
                     ultima_visita = str(fecha_original).replace('T', ' ').split(' ')[0].strip()
                     
                     try:
                         fecha_visita_dt = datetime.strptime(ultima_visita, "%Y-%m-%d").date()
                         dias_sin_venir = (fecha_hoy - fecha_visita_dt).days
                         
-                        if dias_sin_venir <= 15: 
-                            estatus = "Activo"
-                        elif dias_sin_venir <= 30: 
-                            estatus = "En Riesgo"
-                        else: 
-                            estatus = "Inactivo"
+                        if dias_sin_venir <= 7: estatus = "Activo"
+                        elif dias_sin_venir <= 30: estatus = "En Riesgo"
+                        else: estatus = "Inactivo"
                     except:
-                        # Si llega a fallar, nos mostrará el error en lugar de quedarse mudo
                         estatus = "Error de formato"
+                # ---------------------------------------------------------
                 
                 salio = 'SI' if (telefono_limpio not in activos_whatsapp and len(telefono_limpio) == 10) else ''
                 
@@ -269,38 +276,55 @@ if archivo_subido is not None and token_entri:
             ]
             df_final = df_final[columnas_ordenadas]
             
-            # --- DESPLIEGUE DE MÉTRICAS ---
+            # --- DESPLIEGUE VISUAL DE MÉTRICAS ---
             st.markdown("### 📊 Reporte General de Alumnos")
-            
-            # Ajustamos las métricas dinámicamente según lo que activaste
             metricas_a_mostrar = [
                 ("Total Alumnos", len(df_final)),
                 ("Activos 🕺", len(df_final[df_final['Estatus'] == 'Activo'])),
                 ("En Riesgo ⚠️", len(df_final[df_final['Estatus'] == 'En Riesgo']))
             ]
             
-            # Insertamos las métricas extra solo si activaste su respectivo checkbox
             if buscar_kids:
                 metricas_a_mostrar.insert(1, ("KIDS 👧👦", len(df_final[df_final['¿Es Kid?'] == 'SI'])))
             if buscar_pole:
                 metricas_a_mostrar.insert(1, ("Pole Dance 💃", len(df_final[df_final['¿Pole Dance?'] == 'SI'])))
                 
             metricas_a_mostrar.append(("Fuera del Grupo", len(df_final[df_final['SALIO DE GRUPO'] == 'SI'])))
-            metricas_a_mostrar.append(("Repetidos 👯", len(df_final[df_final['¿Num Duplicado?'] == 'SI'])))
             
             cols = st.columns(len(metricas_a_mostrar))
             for idx, (titulo, valor) in enumerate(metricas_a_mostrar):
                 cols[idx].metric(titulo, valor)
             
-            st.markdown("### 📋 Vista Previa de la Base de Datos")
+            st.markdown("### 📋 Vista Previa: Lista de Alumnos")
             st.dataframe(df_final, use_container_width=True, hide_index=True)
+
+            # --- SI HAY PAGOS DE POLE DANCE, LOS MOSTRAMOS EN UNA SEGUNDA TABLA ---
+            df_pagos_pole = pd.DataFrame()
+            if buscar_pole and len(lista_pagos_pole) > 0:
+                st.markdown("---")
+                st.markdown("### 💰 Auditoría de Ingresos: Pole Dance")
+                df_pagos_pole = pd.DataFrame(lista_pagos_pole)
+                
+                # Acomodamos las columnas desde la más reciente
+                df_pagos_pole = df_pagos_pole.sort_values(by='Fecha de Pago', ascending=False)
+                
+                col_pagos1, col_pagos2 = st.columns(2)
+                col_pagos1.metric("Total de Recibos (Histórico)", len(df_pagos_pole))
+                st.dataframe(df_pagos_pole, use_container_width=True, hide_index=True)
             
+            # --- CREACIÓN DEL EXCEL DE MÚLTIPLES PESTAÑAS ---
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_final.to_excel(writer, index=False, sheet_name='Control SAG')
+                # Pestaña 1: La de siempre
+                df_final.to_excel(writer, index=False, sheet_name='Control Alumnos')
+                
+                # Pestaña 2: La financiera (solo si se activó Pole Dance)
+                if buscar_pole and not df_pagos_pole.empty:
+                    df_pagos_pole.to_excel(writer, index=False, sheet_name='Pagos Pole Dance')
             
+            st.markdown("---")
             st.download_button(
-                label="📥 Descargar Base de Datos en Excel",
+                label="📥 Descargar Base de Datos Completa (Excel)",
                 data=buffer.getvalue(),
                 file_name=f"Control_SAG_{fecha_hoy}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
