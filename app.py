@@ -198,7 +198,7 @@ if archivo_subido is not None and token_entri:
                 fecha_nac = alumno.get('manual_id', '') 
                 cumple_este_mes = "¡Felicidades!" if (fecha_nac and mes_actual_nombre in str(fecha_nac).lower()) else ""
                 
-                fecha_original = alumno.get('last_payment_date', alumno.get('payment_date', alumno.get('updated_at', '')))
+                fecha_original = alumno.get('last_payment_date') or alumno.get('payment_date') or alumno.get('updated_at') or ''
                 ultima_visita = ""
                 dias_sin_venir = ""
                 estatus = "Sin datos"
