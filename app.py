@@ -198,7 +198,18 @@ if archivo_subido is not None and token_entri:
                 fecha_nac = alumno.get('manual_id', '') 
                 cumple_este_mes = "¡Felicidades!" if (fecha_nac and mes_actual_nombre in str(fecha_nac).lower()) else ""
                 
-                fecha_original = alumno.get('last_payment_date') or alumno.get('payment_date') or alumno.get('updated_at') or ''
+                # --- NUEVA LÓGICA EXACTA PARA LA FECHA DE VISITA ---
+                fecha_original = ""
+                pago_actual = alumno.get('current_payment')
+                
+                # 1. Intentamos abrir la "caja secreta" del pago actual
+                if pago_actual and isinstance(pago_actual, dict):
+                    fecha_original = pago_actual.get('checkin_date') or pago_actual.get('created_at') or ''
+                    
+                # 2. Si no hay pago actual, buscamos fechas de rescate (y evitamos el updated_at)
+                if not fecha_original:
+                    fecha_original = alumno.get('last_payment_date') or alumno.get('payment_date') or alumno.get('created_at', '')
+                # ---------------------------------------------------
                 ultima_visita = ""
                 dias_sin_venir = ""
                 estatus = "Sin datos"
