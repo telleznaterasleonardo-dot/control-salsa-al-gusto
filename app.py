@@ -19,8 +19,13 @@ with st.sidebar:
     st.markdown("---")
     archivo_subido = st.file_uploader("📂 Sube 'activos_whatsapp.txt' o el Excel", type=['txt', 'csv', 'xlsx'])
     st.markdown("---")
-    st.subheader("🕵️ Filtros Avanzados")
-    escaneo_profundo = st.checkbox("🔍 Identificar quiénes son KIDS (Escaneo Profundo)", help="Cruza el historial de pagos con la lista de alumnos para agregar la columna '¿Es Kid?'. Tarda un poco más.")
+    st.subheader("🕵️ Filtros Avanzados (Histórico)")
+    st.markdown("Cruza el historial de pagos con la lista de alumnos. (Tarda un poco más)")
+    buscar_kids = st.checkbox("👧👦 Identificar KIDS")
+    buscar_pole = st.checkbox("💃 Identificar POLE DANCE")
+    
+# Variable para saber si debemos hacer el escaneo lento
+escaneo_profundo = buscar_kids or buscar_pole
 
 # 1. Configuración de conexión a Entri
 url_base_members = 'https://entricontrol-api.entricontrol.com/public/api/members?sortField=internal_id&sortDirection=DESC&filter='
@@ -69,17 +74,18 @@ if archivo_subido is not None and token_entri:
         
         error_conexion = False
         ids_de_ninos = set()
+        ids_de_pole = set()
         
         progress_bar = st.progress(0)
         status_text = st.empty()
 
         # ==========================================
-        # FASE 1: Buscar IDs de niños
+        # FASE 1: Buscar IDs Históricos (Pagos)
         # ==========================================
         if escaneo_profundo:
             pagina_pagos = 1
             ultima_pagos = 1
-            status_text.text("Fase 1/2: Analizando historial de pagos para ubicar a los Kids...")
+            status_text.text("Fase 1/2: Analizando historial de pagos para ubicar clases especiales...")
             
             while pagina_pagos <= ultima_pagos:
                 url_pagos_paginada = f"{url_base_payments}&page={pagina_pagos}"
@@ -98,10 +104,16 @@ if archivo_subido is not None and token_entri:
                         registros_pagos = []
                     
                     for pago in registros_pagos:
-                        if "KIDS" in str(pago).upper():
-                            alumno_info = pago.get('member', pago)
-                            id_kid = str(alumno_info.get('internal_id', alumno_info.get('id', pago.get('member_id', ''))))
-                            ids_de_ninos.add(id_kid)
+                        pago_str = str(pago).upper()
+                        alumno_info = pago.get('member', pago)
+                        id_alumno = str(alumno_info.get('internal_id', alumno_info.get('id', pago.get('member_id', ''))))
+                        
+                        if buscar_kids and "KIDS" in pago_str:
+                            ids_de_ninos.add(id_alumno)
+                            
+                        # El nuevo filtro caza cualquier paquete que contenga la palabra "POLE"
+                        if buscar_pole and "POLE" in pago_str:
+                            ids_de_pole.add(id_alumno)
                             
                     progress_bar.progress(min(pagina_pagos / ultima_pagos, 1.0))
                     pagina_pagos += 1
@@ -165,13 +177,18 @@ if archivo_subido is not None and token_entri:
             for alumno in todos_los_alumnos:
                 clave_entri = str(alumno.get('internal_id', alumno.get('id', '')))
                 
-                if escaneo_profundo:
+                # Evaluamos los filtros que encendiste
+                if buscar_kids:
                     es_kid_texto = "SI" if clave_entri in ids_de_ninos else "NO"
                 else:
                     es_kid_texto = "No analizado"
+                    
+                if buscar_pole:
+                    es_pole_texto = "SI" if clave_entri in ids_de_pole else "NO"
+                else:
+                    es_pole_texto = "No analizado"
 
                 telefono_bruto = str(alumno.get('phone', alumno.get('cellphone', '0'))).strip()
-                # Extraemos y limpiamos el teléfono para que el análisis de duplicados sea perfecto
                 telefono_limpio = obtener_ultimos_10_digitos(telefono_bruto)
                 
                 nombre_pila = str(alumno.get('name', alumno.get('nombre', ''))).strip()
@@ -203,6 +220,7 @@ if archivo_subido is not None and token_entri:
                     'Num de telefono': telefono_limpio, 
                     'Nombre': nombre_completo,
                     '¿Es Kid?': es_kid_texto,
+                    '¿Pole Dance?': es_pole_texto,
                     'Fecha de nacimiento': fecha_nac,
                     '¿Cumpleaños este mes?': cumple_este_mes,
                     'Registro en entri': clave_entri,
@@ -213,45 +231,46 @@ if archivo_subido is not None and token_entri:
                 })
                 
             columnas_base = [
-                'Num de telefono', 'Nombre', '¿Es Kid?', 'Fecha de nacimiento', '¿Cumpleaños este mes?',
+                'Num de telefono', 'Nombre', '¿Es Kid?', '¿Pole Dance?', 'Fecha de nacimiento', '¿Cumpleaños este mes?',
                 'Registro en entri', 'Ultima Visita', 'Dias sin venir', 'Estatus', 'SALIO DE GRUPO'
             ]
             df_final = pd.DataFrame(filas_procesadas, columns=columnas_base)
             
-            # --- LA NUEVA MAGIA: DETECCIÓN DE DUPLICADOS ---
-            # Le pedimos a Pandas que busque números exactos de 10 dígitos que aparezcan más de una vez
             mask_validos = df_final['Num de telefono'].str.len() == 10
             mask_duplicados = df_final.duplicated(subset=['Num de telefono'], keep=False)
             
             df_final['¿Num Duplicado?'] = ''
             df_final.loc[mask_validos & mask_duplicados, '¿Num Duplicado?'] = 'SI'
             
-            # Reorganizamos las columnas para que la alerta salga junto al número y nombre
             columnas_ordenadas = [
-                'Num de telefono', '¿Num Duplicado?', 'Nombre', '¿Es Kid?', 'Fecha de nacimiento', 
+                'Num de telefono', '¿Num Duplicado?', 'Nombre', '¿Es Kid?', '¿Pole Dance?', 'Fecha de nacimiento', 
                 '¿Cumpleaños este mes?', 'Registro en entri', 'Ultima Visita', 'Dias sin venir', 
                 'Estatus', 'SALIO DE GRUPO'
             ]
             df_final = df_final[columnas_ordenadas]
-            # -----------------------------------------------
             
             # --- DESPLIEGUE DE MÉTRICAS ---
             st.markdown("### 📊 Reporte General de Alumnos")
             
-            col1, col2, col3, col4, col5 = st.columns(5)
-            col1.metric("Total Alumnos", len(df_final))
+            # Ajustamos las métricas dinámicamente según lo que activaste
+            metricas_a_mostrar = [
+                ("Total Alumnos", len(df_final)),
+                ("Activos 🕺", len(df_final[df_final['Estatus'] == 'Activo'])),
+                ("En Riesgo ⚠️", len(df_final[df_final['Estatus'] == 'En Riesgo']))
+            ]
             
-            if escaneo_profundo:
-                total_kids = len(df_final[df_final['¿Es Kid?'] == 'SI'])
-                col2.metric("Alumnos KIDS 👧👦", total_kids)
-            else:
-                col2.metric("Activos 🕺", len(df_final[df_final['Estatus'] == 'Activo']))
+            # Insertamos las métricas extra solo si activaste su respectivo checkbox
+            if buscar_kids:
+                metricas_a_mostrar.insert(1, ("KIDS 👧👦", len(df_final[df_final['¿Es Kid?'] == 'SI'])))
+            if buscar_pole:
+                metricas_a_mostrar.insert(1, ("Pole Dance 💃", len(df_final[df_final['¿Pole Dance?'] == 'SI'])))
                 
-            col3.metric("En Riesgo ⚠️", len(df_final[df_final['Estatus'] == 'En Riesgo']))
-            col4.metric("Fuera del Grupo", len(df_final[df_final['SALIO DE GRUPO'] == 'SI']))
+            metricas_a_mostrar.append(("Fuera del Grupo", len(df_final[df_final['SALIO DE GRUPO'] == 'SI'])))
+            metricas_a_mostrar.append(("Repetidos 👯", len(df_final[df_final['¿Num Duplicado?'] == 'SI'])))
             
-            total_duplicados = len(df_final[df_final['¿Num Duplicado?'] == 'SI'])
-            col5.metric("Num Repetidos 👯", total_duplicados)
+            cols = st.columns(len(metricas_a_mostrar))
+            for idx, (titulo, valor) in enumerate(metricas_a_mostrar):
+                cols[idx].metric(titulo, valor)
             
             st.markdown("### 📋 Vista Previa de la Base de Datos")
             st.dataframe(df_final, use_container_width=True, hide_index=True)
@@ -260,12 +279,10 @@ if archivo_subido is not None and token_entri:
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df_final.to_excel(writer, index=False, sheet_name='Control SAG')
             
-            nombre_archivo = f"Control_SAG_{fecha_hoy}.xlsx"
-            
             st.download_button(
                 label="📥 Descargar Base de Datos en Excel",
                 data=buffer.getvalue(),
-                file_name=nombre_archivo,
+                file_name=f"Control_SAG_{fecha_hoy}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 else:
